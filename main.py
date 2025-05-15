@@ -12,8 +12,8 @@ import nest_asyncio
 load_dotenv()
 
 # Required environment variables
-BOT_TOKEN = os.getenv("7624939968:AAGpQN-YToHmMWxMEUerS5PzNeNqs29wGTg")
-INFURA_URL = os.getenv("https://eth-mainnet.g.alchemy.com/v2/HZOmTXoCl7ZG7tgzp3D8DrmvJn0NlNrK")
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+INFURA_URL = os.getenv("INFURA_URL")
 
 # Setup
 w3 = Web3(Web3.HTTPProvider(INFURA_URL))
