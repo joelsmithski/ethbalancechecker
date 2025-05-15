@@ -1,17 +1,23 @@
-import os
 import asyncio
+import os
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from web3 import Web3
+from dotenv import load_dotenv
 
-# 🔐 Insert your secrets here
-BOT_TOKEN = "7624939968:AAGpQN-YToHmMWxMEUerS5PzNeNqs29wGTg"
-INFURA_URL = "https://eth-mainnet.g.alchemy.com/v2/HZOmTXoCl7ZG7tgzp3D8DrmvJn0NlNrK"
+load_dotenv()
 
-# Setup web3 connection
+# Insert your bot token and Infura URL here
+BOT_TOKEN = os.getenv("BOT_TOKEN", "7624939968:AAGpQN-YToHmMWxMEUerS5PzNeNqs29wGTg")
+INFURA_URL = os.getenv("INFURA_URL", "https://eth-mainnet.g.alchemy.com/v2/HZOmTXoCl7ZG7tgzp3D8DrmvJn0NlNrK")
+
 web3 = Web3(Web3.HTTPProvider(INFURA_URL))
 
-# ERC20 ABI fragment
+# USDT and USDC contract addresses (Ethereum mainnet)
+USDT_CONTRACT = web3.to_checksum_address("0xdAC17F958D2ee523a2206206994597C13D831ec7")
+USDC_CONTRACT = web3.to_checksum_address("0xA0b86991C6218b36c1d19D4a2e9Eb0cE3606eB48")
+
+# ERC20 ABI snippet to read balanceOf
 ERC20_ABI = [
     {
         "constant": True,
@@ -19,75 +25,60 @@ ERC20_ABI = [
         "name": "balanceOf",
         "outputs": [{"name": "balance", "type": "uint256"}],
         "type": "function",
-    },
-    {
-        "constant": True,
-        "inputs": [],
-        "name": "decimals",
-        "outputs": [{"name": "", "type": "uint8"}],
-        "type": "function",
     }
 ]
 
-# ERC20 token addresses
-TOKENS = {
-    "ETH": None,
-    "USDT": "0xdAC17F958D2ee523a2206206994597C13D831ec7",
-    "USDC": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
-}
+usdt = web3.eth.contract(address=USDT_CONTRACT, abi=ERC20_ABI)
+usdc = web3.eth.contract(address=USDC_CONTRACT, abi=ERC20_ABI)
 
+def is_valid_eth_address(addr: str) -> bool:
+    try:
+        return web3.is_address(addr) and web3.is_checksum_address(web3.to_checksum_address(addr))
+    except:
+        return False
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("👋 Send me up to 10 Ethereum addresses (separated by spaces or newlines), and I’ll fetch their ETH, USDT, and USDC balances.")
+    await update.message.reply_text("Send up to 10 Ethereum addresses (one per line or comma-separated) to check balances.")
 
+async def check_balances(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    input_text = update.message.text
+    raw_addresses = [addr.strip() for addr in input_text.replace(",", "\n").splitlines()]
+    addresses = [addr for addr in raw_addresses if is_valid_eth_address(addr)]
 
-async def handle_addresses(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    raw_text = update.message.text.strip()
-    addresses = raw_text.replace(',', ' ').replace('\n', ' ').split()
-    addresses = [addr for addr in addresses if web3.is_address(addr)]
-
-    if len(addresses) == 0:
-        await update.message.reply_text("❌ Please send at least one valid Ethereum address.")
+    if not addresses:
+        await update.message.reply_text("No valid Ethereum addresses found.")
         return
+
     if len(addresses) > 10:
-        await update.message.reply_text("❌ You can only check up to 10 addresses at a time.")
+        await update.message.reply_text("Please send no more than 10 addresses at a time.")
         return
 
-    results = []
+    responses = []
     for addr in addresses:
-        balances = []
-        # ETH
-        eth_balance = web3.eth.get_balance(addr)
-        balances.append(f"ETH: {web3.from_wei(eth_balance, 'ether'):.6f}")
+        checksummed = web3.to_checksum_address(addr)
+        eth_balance = web3.eth.get_balance(checksummed) / 1e18
+        usdt_balance = usdt.functions.balanceOf(checksummed).call() / 1e6
+        usdc_balance = usdc.functions.balanceOf(checksummed).call() / 1e6
 
-        # Tokens
-        for token_name, token_addr in TOKENS.items():
-            if token_name == "ETH":
-                continue
-            contract = web3.eth.contract(address=token_addr, abi=ERC20_ABI)
-            try:
-                balance = contract.functions.balanceOf(addr).call()
-                decimals = contract.functions.decimals().call()
-                adjusted = balance / (10 ** decimals)
-                balances.append(f"{token_name}: {adjusted:.2f}")
-            except Exception as e:
-                balances.append(f"{token_name}: error")
+        responses.append(
+            f"📍 *{checksummed}*\n"
+            f"  Ξ ETH: `{eth_balance:.5f}`\n"
+            f"  💵 USDT: `{usdt_balance:.2f}`\n"
+            f"  💵 USDC: `{usdc_balance:.2f}`\n"
+        )
 
-        result = f"📍 `{addr}`\n" + "\n".join(balances)
-        results.append(result)
-
-    await update.message.reply_text("\n\n".join(results), parse_mode="Markdown")
-
+    await update.message.reply_text("\n\n".join(responses), parse_mode="Markdown")
 
 async def main():
     app = Application.builder().token(BOT_TOKEN).build()
-
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_addresses))
-
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, check_balances))
     print("🤖 Bot is polling...")
     await app.run_polling()
 
-
 if __name__ == "__main__":
-    asyncio.run(main())
+    import nest_asyncio
+    nest_asyncio.apply()
+    loop = asyncio.get_event_loop()
+    loop.create_task(main())
+    loop.run_forever()
