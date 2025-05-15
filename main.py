@@ -1,84 +1,83 @@
-import asyncio
+import logging
 import os
-from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+import asyncio
+import csv
+import tempfile
+from telegram import Update, InputFile
+from telegram.ext import Application, MessageHandler, filters, ContextTypes
 from web3 import Web3
-from dotenv import load_dotenv
 
-load_dotenv()
+# === INSERT YOUR BOT TOKEN AND INFURA URL HERE ===
+BOT_TOKEN = "7624939968:AAGpQN-YToHmMWxMEUerS5PzNeNqs29wGTg"
+INFURA_URL = "https://eth-mainnet.g.alchemy.com/v2/HZOmTXoCl7ZG7tgzp3D8DrmvJn0NlNrK"
 
-# Insert your bot token and Infura URL here
-BOT_TOKEN = os.getenv("BOT_TOKEN", "7624939968:AAGpQN-YToHmMWxMEUerS5PzNeNqs29wGTg")
-INFURA_URL = os.getenv("INFURA_URL", "https://eth-mainnet.g.alchemy.com/v2/HZOmTXoCl7ZG7tgzp3D8DrmvJn0NlNrK")
+# === SETUP ===
+logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
+w3 = Web3(Web3.HTTPProvider(INFURA_URL))
 
-web3 = Web3(Web3.HTTPProvider(INFURA_URL))
+# ERC-20 token addresses (mainnet)
+USDT_CONTRACT = w3.to_checksum_address("0xdAC17F958D2ee523a2206206994597C13D831ec7")
+USDC_CONTRACT = w3.to_checksum_address("0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606EB48")
 
-# USDT and USDC contract addresses (Ethereum mainnet)
-USDT_CONTRACT = web3.to_checksum_address("0xdAC17F958D2ee523a2206206994597C13D831ec7")
-USDC_CONTRACT = web3.to_checksum_address("0xA0b86991C6218b36c1d19D4a2e9Eb0cE3606eB48")
+# Minimal ABI for balanceOf function
+ERC20_ABI = [{"constant":True,"inputs":[{"name":"_owner","type":"address"}],"name":"balanceOf","outputs":[{"name":"balance","type":"uint256"}],"type":"function"}]
+usdt_contract = w3.eth.contract(address=USDT_CONTRACT, abi=ERC20_ABI)
+usdc_contract = w3.eth.contract(address=USDC_CONTRACT, abi=ERC20_ABI)
 
-# ERC20 ABI snippet to read balanceOf
-ERC20_ABI = [
-    {
-        "constant": True,
-        "inputs": [{"name": "_owner", "type": "address"}],
-        "name": "balanceOf",
-        "outputs": [{"name": "balance", "type": "uint256"}],
-        "type": "function",
-    }
-]
 
-usdt = web3.eth.contract(address=USDT_CONTRACT, abi=ERC20_ABI)
-usdc = web3.eth.contract(address=USDC_CONTRACT, abi=ERC20_ABI)
+def is_valid_eth_address(addr):
+    return w3.is_address(addr)
 
-def is_valid_eth_address(addr: str) -> bool:
+
+def fetch_balances(address):
     try:
-        return web3.is_address(addr) and web3.is_checksum_address(web3.to_checksum_address(addr))
-    except:
-        return False
+        address = w3.to_checksum_address(address)
+        eth = w3.eth.get_balance(address) / 1e18
+        usdt = usdt_contract.functions.balanceOf(address).call() / 1e6
+        usdc = usdc_contract.functions.balanceOf(address).call() / 1e6
+        return round(eth, 6), round(usdt, 2), round(usdc, 2)
+    except Exception as e:
+        return f"Error: {e}", "-", "-"
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Send up to 10 Ethereum addresses (one per line or comma-separated) to check balances.")
 
-async def check_balances(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message:
+        return
+
     input_text = update.message.text
-    raw_addresses = [addr.strip() for addr in input_text.replace(",", "\n").splitlines()]
-    addresses = [addr for addr in raw_addresses if is_valid_eth_address(addr)]
+    addresses = list({line.strip() for line in input_text.splitlines() if is_valid_eth_address(line.strip())})
 
     if not addresses:
-        await update.message.reply_text("No valid Ethereum addresses found.")
+        await update.message.reply_text("No valid Ethereum addresses found in your message.")
         return
 
-    if len(addresses) > 10:
-        await update.message.reply_text("Please send no more than 10 addresses at a time.")
-        return
-
-    responses = []
+    results = []
     for addr in addresses:
-        checksummed = web3.to_checksum_address(addr)
-        eth_balance = web3.eth.get_balance(checksummed) / 1e18
-        usdt_balance = usdt.functions.balanceOf(checksummed).call() / 1e6
-        usdc_balance = usdc.functions.balanceOf(checksummed).call() / 1e6
+        eth, usdt, usdc = fetch_balances(addr)
+        results.append({"address": addr, "ETH": eth, "USDT": usdt, "USDC": usdc})
 
-        responses.append(
-            f"📍 *{checksummed}*\n"
-            f"  Ξ ETH: `{eth_balance:.5f}`\n"
-            f"  💵 USDT: `{usdt_balance:.2f}`\n"
-            f"  💵 USDC: `{usdc_balance:.2f}`\n"
-        )
+    if len(addresses) <= 10:
+        response = "\n".join([f"{r['address'][:6]}...{r['address'][-4:]} | ETH: {r['ETH']} | USDT: {r['USDT']} | USDC: {r['USDC']}" for r in results])
+        await update.message.reply_text(response)
+    else:
+        with tempfile.NamedTemporaryFile(mode="w", delete=False, newline="", suffix=".csv") as csvfile:
+            fieldnames = ["Address", "ETH", "USDT", "USDC"]
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+            writer.writeheader()
+            for r in results:
+                writer.writerow({"Address": r['address'], "ETH": r['ETH'], "USDT": r['USDT'], "USDC": r['USDC']})
+            csv_path = csvfile.name
 
-    await update.message.reply_text("\n\n".join(responses), parse_mode="Markdown")
+        with open(csv_path, "rb") as f:
+            await update.message.reply_document(InputFile(f, filename="balances.csv"))
+        os.remove(csv_path)
+
 
 async def main():
     app = Application.builder().token(BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, check_balances))
-    print("🤖 Bot is polling...")
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     await app.run_polling()
 
+
 if __name__ == "__main__":
-    import nest_asyncio
-    nest_asyncio.apply()
-    loop = asyncio.get_event_loop()
-    loop.create_task(main())
-    loop.run_forever()
+    asyncio.run(main())
