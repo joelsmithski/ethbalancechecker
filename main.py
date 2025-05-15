@@ -24,6 +24,11 @@ if not BOT_TOKEN or not INFURA_URL:
 # Setup Web3
 w3 = Web3(Web3.HTTPProvider(INFURA_URL))
 
+print(f"BOT_TOKEN set? {'Yes' if BOT_TOKEN else 'No'}")
+print(f"INFURA_URL (RPC) is: {INFURA_URL}")
+print(f"Web3 connection status: {w3.is_connected()}")
+
+
 # Apply nest_asyncio to allow asyncio event loop re-entry (needed for some environments)
 nest_asyncio.apply()
 
